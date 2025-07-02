@@ -6,6 +6,11 @@
 (define-constant ERR_INVALID_STATUS (err u104))
 (define-constant ERR_INSUFFICIENT_FUNDS (err u105))
 (define-constant ERR_MILESTONE_NOT_COMPLETED (err u106))
+(define-constant ERR_AMENDMENT_NOT_FOUND (err u107))
+(define-constant ERR_AMENDMENT_ALREADY_VOTED (err u108))
+(define-constant ERR_AMENDMENT_NOT_PENDING (err u109))
+
+(define-data-var next-amendment-id uint u1)
 
 (define-data-var next-budget-id uint u1)
 (define-data-var next-milestone-id uint u1)
@@ -259,4 +264,118 @@
 
 (define-read-only (get-next-milestone-id)
   (var-get next-milestone-id)
+)
+
+
+(define-map budget-amendments
+  { amendment-id: uint }
+  {
+    budget-id: uint,
+    proposed-amount: uint,
+    reason: (string-ascii 200),
+    proposed-by: principal,
+    created-at: uint,
+    status: (string-ascii 20)
+  }
+)
+
+(define-map amendment-votes
+  { amendment-id: uint }
+  { yes-votes: uint, no-votes: uint, total-votes: uint }
+)
+
+(define-map citizen-amendment-votes
+  { citizen: principal, amendment-id: uint }
+  { vote: bool, voted-at: uint }
+)
+
+(define-public (propose-budget-amendment (budget-id uint) (new-amount uint) (reason (string-ascii 200)))
+  (let
+    (
+      (amendment-id (var-get next-amendment-id))
+      (budget (unwrap! (map-get? budgets { budget-id: budget-id }) ERR_BUDGET_NOT_FOUND))
+    )
+    (asserts! (> new-amount u0) ERR_INVALID_AMOUNT)
+    (asserts! (is-eq (get status budget) "approved") ERR_INVALID_STATUS)
+    
+    (map-set budget-amendments
+      { amendment-id: amendment-id }
+      {
+        budget-id: budget-id,
+        proposed-amount: new-amount,
+        reason: reason,
+        proposed-by: tx-sender,
+        created-at: stacks-block-height,
+        status: "pending"
+      }
+    )
+    
+    (map-set amendment-votes
+      { amendment-id: amendment-id }
+      { yes-votes: u0, no-votes: u0, total-votes: u0 }
+    )
+    
+    (var-set next-amendment-id (+ amendment-id u1))
+    (ok amendment-id)
+  )
+)
+
+(define-public (vote-on-amendment (amendment-id uint) (vote bool))
+  (let
+    (
+      (amendment (unwrap! (map-get? budget-amendments { amendment-id: amendment-id }) ERR_AMENDMENT_NOT_FOUND))
+      (current-votes (unwrap! (map-get? amendment-votes { amendment-id: amendment-id }) ERR_AMENDMENT_NOT_FOUND))
+      (existing-vote (map-get? citizen-amendment-votes { citizen: tx-sender, amendment-id: amendment-id }))
+    )
+    (asserts! (is-eq (get status amendment) "pending") ERR_AMENDMENT_NOT_PENDING)
+    (asserts! (is-none existing-vote) ERR_AMENDMENT_ALREADY_VOTED)
+    
+    (map-set citizen-amendment-votes
+      { citizen: tx-sender, amendment-id: amendment-id }
+      { vote: vote, voted-at: stacks-block-height }
+    )
+    
+    (map-set amendment-votes
+      { amendment-id: amendment-id }
+      (if vote
+        { yes-votes: (+ (get yes-votes current-votes) u1), no-votes: (get no-votes current-votes), total-votes: (+ (get total-votes current-votes) u1) }
+        { yes-votes: (get yes-votes current-votes), no-votes: (+ (get no-votes current-votes) u1), total-votes: (+ (get total-votes current-votes) u1) }
+      )
+    )
+    (ok true)
+  )
+)
+
+(define-public (approve-amendment (amendment-id uint))
+  (let
+    (
+      (amendment (unwrap! (map-get? budget-amendments { amendment-id: amendment-id }) ERR_AMENDMENT_NOT_FOUND))
+      (budget (unwrap! (map-get? budgets { budget-id: (get budget-id amendment) }) ERR_BUDGET_NOT_FOUND))
+      (old-amount (get total-amount budget))
+      (new-amount (get proposed-amount amendment))
+    )
+    (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_UNAUTHORIZED)
+    (asserts! (is-eq (get status amendment) "pending") ERR_AMENDMENT_NOT_PENDING)
+    
+    (map-set budget-amendments
+      { amendment-id: amendment-id }
+      (merge amendment { status: "approved" })
+    )
+    
+    (map-set budgets
+      { budget-id: (get budget-id amendment) }
+      (merge budget { total-amount: new-amount })
+    )
+    
+    (var-set total-allocated (+ (- (var-get total-allocated) old-amount) new-amount))
+    (ok true)
+  )
+)
+
+(define-read-only (get-amendment (amendment-id uint))
+  (map-get? budget-amendments { amendment-id: amendment-id })
+)
+
+(define-read-only (get-amendment-votes (amendment-id uint))
+  (map-get? amendment-votes { amendment-id: amendment-id })
 )
