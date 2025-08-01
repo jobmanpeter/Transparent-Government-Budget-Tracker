@@ -10,6 +10,10 @@
 (define-constant ERR_AMENDMENT_ALREADY_VOTED (err u108))
 (define-constant ERR_AMENDMENT_NOT_PENDING (err u109))
 
+(define-constant ERR_INVALID_RATING (err u110))
+(define-constant ERR_BUDGET_NOT_COMPLETED (err u111))
+(define-constant ERR_ALREADY_RATED (err u112))
+
 (define-data-var next-amendment-id uint u1)
 
 (define-data-var next-budget-id uint u1)
@@ -378,4 +382,79 @@
 
 (define-read-only (get-amendment-votes (amendment-id uint))
   (map-get? amendment-votes { amendment-id: amendment-id })
+)
+
+
+(define-map budget-ratings
+  { budget-id: uint }
+  { 
+    total-timeliness: uint,
+    total-quality: uint, 
+    total-value: uint,
+    rating-count: uint,
+    average-score: uint
+  }
+)
+
+(define-map citizen-ratings
+  { citizen: principal, budget-id: uint }
+  { 
+    timeliness: uint,
+    quality: uint,
+    value: uint,
+    comment: (string-ascii 200),
+    rated-at: uint
+  }
+)
+
+(define-public (rate-budget (budget-id uint) (timeliness uint) (quality uint) (value uint) (comment (string-ascii 200)))
+  (let
+    (
+      (budget (unwrap! (map-get? budgets { budget-id: budget-id }) ERR_BUDGET_NOT_FOUND))
+      (existing-rating (map-get? citizen-ratings { citizen: tx-sender, budget-id: budget-id }))
+      (current-ratings (default-to { total-timeliness: u0, total-quality: u0, total-value: u0, rating-count: u0, average-score: u0 } 
+                       (map-get? budget-ratings { budget-id: budget-id })))
+    )
+    (asserts! (and (<= timeliness u5) (<= quality u5) (<= value u5) (> timeliness u0) (> quality u0) (> value u0)) ERR_INVALID_RATING)
+    (asserts! (>= (get spent-amount budget) (get allocated-amount budget)) ERR_BUDGET_NOT_COMPLETED)
+    (asserts! (is-none existing-rating) ERR_ALREADY_RATED)
+    
+    (map-set citizen-ratings
+      { citizen: tx-sender, budget-id: budget-id }
+      { timeliness: timeliness, quality: quality, value: value, comment: comment, rated-at: stacks-block-height }
+    )
+    
+    (let
+      (
+        (new-count (+ (get rating-count current-ratings) u1))
+        (new-total-timeliness (+ (get total-timeliness current-ratings) timeliness))
+        (new-total-quality (+ (get total-quality current-ratings) quality))
+        (new-total-value (+ (get total-value current-ratings) value))
+        (new-average (/ (+ new-total-timeliness new-total-quality new-total-value) (* new-count u3)))
+      )
+      (map-set budget-ratings
+        { budget-id: budget-id }
+        { 
+          total-timeliness: new-total-timeliness,
+          total-quality: new-total-quality,
+          total-value: new-total-value,
+          rating-count: new-count,
+          average-score: new-average
+        }
+      )
+    )
+    (ok true)
+  )
+)
+
+(define-read-only (get-budget-rating (budget-id uint))
+  (map-get? budget-ratings { budget-id: budget-id })
+)
+
+(define-read-only (get-citizen-rating (citizen principal) (budget-id uint))
+  (map-get? citizen-ratings { citizen: citizen, budget-id: budget-id })
+)
+
+(define-read-only (get-department-average-rating (department (string-ascii 50)))
+  (ok u0)
 )
