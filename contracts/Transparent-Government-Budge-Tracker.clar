@@ -458,3 +458,98 @@
 (define-read-only (get-department-average-rating (department (string-ascii 50)))
   (ok u0)
 )
+
+(define-map department-benchmarks
+  { department: (string-ascii 50) }
+  {
+    avg-efficiency: uint,
+    avg-completion-time: uint,
+    total-budgets: uint,
+    success-rate: uint,
+    last-updated: uint
+  }
+)
+
+(define-map budget-performance
+  { budget-id: uint }
+  {
+    efficiency-score: uint,
+    completion-time: uint,
+    vs-benchmark: int,
+    recorded-at: uint
+  }
+)
+
+(define-public (record-budget-performance (budget-id uint))
+  (let
+    (
+      (budget (unwrap! (map-get? budgets { budget-id: budget-id }) ERR_BUDGET_NOT_FOUND))
+      (department (get department budget))
+      (current-benchmark (default-to 
+        { avg-efficiency: u50, avg-completion-time: u100, total-budgets: u0, success-rate: u50, last-updated: u0 }
+        (map-get? department-benchmarks { department: department })))
+      (efficiency (unwrap! (get-budget-efficiency budget-id) ERR_BUDGET_NOT_FOUND))
+      (completion-time (- stacks-block-height (get created-at budget)))
+      (vs-benchmark (- (to-int efficiency) (to-int (get avg-efficiency current-benchmark))))
+    )
+    (asserts! (>= (get spent-amount budget) (get allocated-amount budget)) ERR_BUDGET_NOT_COMPLETED)
+    
+    (map-set budget-performance
+      { budget-id: budget-id }
+      {
+        efficiency-score: efficiency,
+        completion-time: completion-time,
+        vs-benchmark: vs-benchmark,
+        recorded-at: stacks-block-height
+      }
+    )
+    
+    (let
+      (
+        (total-budgets (+ (get total-budgets current-benchmark) u1))
+        (new-avg-efficiency (/ (+ (* (get avg-efficiency current-benchmark) (get total-budgets current-benchmark)) efficiency) total-budgets))
+        (new-avg-time (/ (+ (* (get avg-completion-time current-benchmark) (get total-budgets current-benchmark)) completion-time) total-budgets))
+        (new-success-rate (if (>= efficiency u70) 
+          (/ (+ (* (get success-rate current-benchmark) (get total-budgets current-benchmark)) u100) total-budgets)
+          (/ (* (get success-rate current-benchmark) (get total-budgets current-benchmark)) total-budgets)))
+      )
+      (map-set department-benchmarks
+        { department: department }
+        {
+          avg-efficiency: new-avg-efficiency,
+          avg-completion-time: new-avg-time,
+          total-budgets: total-budgets,
+          success-rate: new-success-rate,
+          last-updated: stacks-block-height
+        }
+      )
+    )
+    (ok true)
+  )
+)
+
+(define-read-only (get-department-benchmark (department (string-ascii 50)))
+  (map-get? department-benchmarks { department: department })
+)
+
+(define-read-only (get-budget-performance (budget-id uint))
+  (map-get? budget-performance { budget-id: budget-id })
+)
+
+(define-read-only (compare-department-performance (dept1 (string-ascii 50)) (dept2 (string-ascii 50)))
+  (let
+    (
+      (benchmark1 (map-get? department-benchmarks { department: dept1 }))
+      (benchmark2 (map-get? department-benchmarks { department: dept2 }))
+    )
+    (if (and (is-some benchmark1) (is-some benchmark2))
+      (ok {
+        dept1-efficiency: (get avg-efficiency (unwrap! benchmark1 ERR_BUDGET_NOT_FOUND)),
+        dept2-efficiency: (get avg-efficiency (unwrap! benchmark2 ERR_BUDGET_NOT_FOUND)),
+        efficiency-diff: (- (to-int (get avg-efficiency (unwrap! benchmark1 ERR_BUDGET_NOT_FOUND))) 
+                            (to-int (get avg-efficiency (unwrap! benchmark2 ERR_BUDGET_NOT_FOUND))))
+      })
+      ERR_BUDGET_NOT_FOUND
+    )
+  )
+)
