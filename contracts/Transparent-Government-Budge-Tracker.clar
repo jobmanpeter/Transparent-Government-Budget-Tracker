@@ -14,6 +14,11 @@
 (define-constant ERR_BUDGET_NOT_COMPLETED (err u111))
 (define-constant ERR_ALREADY_RATED (err u112))
 
+(define-constant ERR_NOT_DELEGATED (err u113))
+(define-constant ERR_DELEGATION_EXISTS (err u114))
+
+(define-data-var next-delegation-id uint u1)
+
 (define-data-var next-amendment-id uint u1)
 
 (define-data-var next-budget-id uint u1)
@@ -551,5 +556,132 @@
       })
       ERR_BUDGET_NOT_FOUND
     )
+  )
+)
+
+(define-map budget-delegations
+  { budget-id: uint }
+  {
+    delegate: principal,
+    delegated-by: principal,
+    delegated-at: uint,
+    active: bool
+  }
+)
+
+(define-map delegation-history
+  { delegation-id: uint }
+  {
+    budget-id: uint,
+    delegate: principal,
+    action: (string-ascii 20),
+    performed-by: principal,
+    performed-at: uint
+  }
+)
+
+(define-public (delegate-budget-authority (budget-id uint) (delegate principal))
+  (let
+    (
+      (budget (unwrap! (map-get? budgets { budget-id: budget-id }) ERR_BUDGET_NOT_FOUND))
+      (existing-delegation (map-get? budget-delegations { budget-id: budget-id }))
+      (delegation-id (var-get next-delegation-id))
+    )
+    (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_UNAUTHORIZED)
+    (asserts! (or (is-none existing-delegation) (not (get active (unwrap-panic existing-delegation)))) ERR_DELEGATION_EXISTS)
+    
+    (map-set budget-delegations
+      { budget-id: budget-id }
+      {
+        delegate: delegate,
+        delegated-by: tx-sender,
+        delegated-at: stacks-block-height,
+        active: true
+      }
+    )
+    
+    (map-set delegation-history
+      { delegation-id: delegation-id }
+      {
+        budget-id: budget-id,
+        delegate: delegate,
+        action: "delegated",
+        performed-by: tx-sender,
+        performed-at: stacks-block-height
+      }
+    )
+    
+    (var-set next-delegation-id (+ delegation-id u1))
+    (ok true)
+  )
+)
+
+(define-public (revoke-budget-authority (budget-id uint))
+  (let
+    (
+      (delegation (unwrap! (map-get? budget-delegations { budget-id: budget-id }) ERR_NOT_DELEGATED))
+      (delegation-id (var-get next-delegation-id))
+    )
+    (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_UNAUTHORIZED)
+    (asserts! (get active delegation) ERR_NOT_DELEGATED)
+    
+    (map-set budget-delegations
+      { budget-id: budget-id }
+      (merge delegation { active: false })
+    )
+    
+    (map-set delegation-history
+      { delegation-id: delegation-id }
+      {
+        budget-id: budget-id,
+        delegate: (get delegate delegation),
+        action: "revoked",
+        performed-by: tx-sender,
+        performed-at: stacks-block-height
+      }
+    )
+    
+    (var-set next-delegation-id (+ delegation-id u1))
+    (ok true)
+  )
+)
+
+(define-public (complete-milestone-delegated (milestone-id uint))
+  (let
+    (
+      (milestone (unwrap! (map-get? milestones { milestone-id: milestone-id }) ERR_MILESTONE_NOT_FOUND))
+      (budget-id (get budget-id milestone))
+      (budget (unwrap! (map-get? budgets { budget-id: budget-id }) ERR_BUDGET_NOT_FOUND))
+      (delegation (unwrap! (map-get? budget-delegations { budget-id: budget-id }) ERR_NOT_DELEGATED))
+    )
+    (asserts! (and (is-eq tx-sender (get delegate delegation)) (get active delegation)) ERR_NOT_DELEGATED)
+    (asserts! (is-eq (get status milestone) "pending") ERR_INVALID_STATUS)
+    
+    (map-set milestones
+      { milestone-id: milestone-id }
+      (merge milestone { 
+        status: "completed",
+        completion-date: (some stacks-block-height)
+      })
+    )
+    
+    (map-set budgets
+      { budget-id: budget-id }
+      (merge budget { spent-amount: (+ (get spent-amount budget) (get amount milestone)) })
+    )
+    
+    (var-set total-spent (+ (var-get total-spent) (get amount milestone)))
+    (ok true)
+  )
+)
+
+(define-read-only (get-budget-delegate (budget-id uint))
+  (map-get? budget-delegations { budget-id: budget-id })
+)
+
+(define-read-only (is-budget-delegate (budget-id uint) (principal-to-check principal))
+  (match (map-get? budget-delegations { budget-id: budget-id })
+    delegation (and (is-eq (get delegate delegation) principal-to-check) (get active delegation))
+    false
   )
 )
