@@ -17,6 +17,11 @@
 (define-constant ERR_NOT_DELEGATED (err u113))
 (define-constant ERR_DELEGATION_EXISTS (err u114))
 
+(define-constant ERR_AUDIT_NOT_FOUND (err u115))
+(define-constant ERR_INVALID_EVENT_TYPE (err u116))
+
+(define-data-var next-audit-id uint u1)
+
 (define-data-var next-delegation-id uint u1)
 
 (define-data-var next-amendment-id uint u1)
@@ -684,4 +689,74 @@
     delegation (and (is-eq (get delegate delegation) principal-to-check) (get active delegation))
     false
   )
+)
+
+(define-map audit-events
+  { audit-id: uint }
+  {
+    event-type: (string-ascii 30),
+    budget-id: uint,
+    triggered-by: principal,
+    previous-value: (optional (string-ascii 50)),
+    new-value: (optional (string-ascii 50)),
+    timestamp: uint,
+    block-height: uint,
+    details: (string-ascii 100)
+  }
+)
+
+(define-map budget-audit-log
+  { budget-id: uint }
+  { event-ids: (list 100 uint) }
+)
+
+(define-private (log-audit-event (event-type (string-ascii 30)) (budget-id uint) (prev-val (optional (string-ascii 50))) (new-val (optional (string-ascii 50))) (details (string-ascii 100)))
+  (let
+    (
+      (audit-id (var-get next-audit-id))
+      (current-log (default-to { event-ids: (list) } (map-get? budget-audit-log { budget-id: budget-id })))
+    )
+    (map-set audit-events
+      { audit-id: audit-id }
+      {
+        event-type: event-type,
+        budget-id: budget-id,
+        triggered-by: tx-sender,
+        previous-value: prev-val,
+        new-value: new-val,
+        timestamp: stacks-block-height,
+        block-height: stacks-block-height,
+        details: details
+      }
+    )
+    (map-set budget-audit-log
+      { budget-id: budget-id }
+      { event-ids: (unwrap-panic (as-max-len? (append (get event-ids current-log) audit-id) u100)) }
+    )
+    (var-set next-audit-id (+ audit-id u1))
+    (ok audit-id)
+  )
+)
+
+(define-read-only (get-audit-event (audit-id uint))
+  (map-get? audit-events { audit-id: audit-id })
+)
+
+(define-read-only (get-budget-audit-trail (budget-id uint))
+  (map-get? budget-audit-log { budget-id: budget-id })
+)
+
+(define-read-only (get-audit-events-by-principal (principal-to-check principal) (budget-id uint))
+  (ok (filter is-triggered-by-principal 
+    (map get-event-or-none 
+      (default-to (list) 
+        (get event-ids (map-get? budget-audit-log { budget-id: budget-id }))))))
+)
+
+(define-private (get-event-or-none (audit-id uint))
+  (map-get? audit-events { audit-id: audit-id })
+)
+
+(define-private (is-triggered-by-principal (event (optional { event-type: (string-ascii 30), budget-id: uint, triggered-by: principal, previous-value: (optional (string-ascii 50)), new-value: (optional (string-ascii 50)), timestamp: uint, block-height: uint, details: (string-ascii 100) })))
+  false
 )
